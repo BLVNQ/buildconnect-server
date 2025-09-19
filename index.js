@@ -28,7 +28,25 @@ app.get('/', (req, res) => {
 });
 
 
-// --- NEW ENDPOINT FOR MY BOOKINGS ---
+// --- NEW ENDPOINT TO CANCEL A BOOKING ---
+app.put('/api/bookings/:bookingId/cancel', async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const bookingRef = db.collection('bookings').doc(bookingId);
+
+    // Update the document to set the status to "Cancelled"
+    await bookingRef.update({ status: 'Cancelled' });
+
+    res.status(200).send({ message: 'Booking cancelled successfully!' });
+  } catch (error) {
+    console.error("Error cancelling booking:", error);
+    res.status(500).send({ error: 'Failed to cancel booking.' });
+  }
+});
+// ----------------------------------------
+
+
+// --- My Bookings Endpoint ---
 app.get('/api/my-bookings/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -37,10 +55,7 @@ app.get('/api/my-bookings/:userId', async (req, res) => {
     if (snapshot.empty) {
       return res.status(200).json([]);
     }
-    const bookingsList = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+    const bookingsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     bookingsList.sort((a, b) => new Date(b.bookingDate) - new Date(a.bookingDate));
     res.status(200).json(bookingsList);
   } catch (error) {
