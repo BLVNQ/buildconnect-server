@@ -27,14 +27,34 @@ app.get('/', (req, res) => {
   res.send('BuildConnect Backend is connected to Firebase!');
 });
 
+
+// --- NEW ENDPOINT FOR MY BOOKINGS ---
+app.get('/api/my-bookings/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const bookingsQuery = db.collection('bookings').where('clientId', '==', userId);
+    const snapshot = await bookingsQuery.get();
+    if (snapshot.empty) {
+      return res.status(200).json([]);
+    }
+    const bookingsList = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+    bookingsList.sort((a, b) => new Date(b.bookingDate) - new Date(a.bookingDate));
+    res.status(200).json(bookingsList);
+  } catch (error) {
+    console.error("Error fetching user bookings:", error);
+    res.status(500).send({ error: 'Failed to fetch bookings.' });
+  }
+});
+
 // --- Payment Order Endpoint ---
 app.post('/api/create-order', async (req, res) => {
   try {
     const { amount } = req.body;
     const options = {
-      amount: amount * 100,
-      currency: "INR",
-      receipt: `receipt_order_${new Date().getTime()}`
+      amount: amount * 100, currency: "INR", receipt: `receipt_order_${new Date().getTime()}`
     };
     const order = await razorpay.orders.create(options);
     if (!order) return res.status(500).send('Error creating order');
@@ -120,7 +140,12 @@ app.post('/api/create-booking', async (req, res) => {
       return res.status(400).send({ error: 'Missing booking information.' });
     }
     const bookingRef = await db.collection('bookings').add({
-      clientId: userId, items: cartItems, totalAmount: totalPrice, status: 'Confirmed', bookingDate: new Date().toISOString(), paymentDetails: paymentDetails || {}
+      clientId: userId,
+      items: cartItems, 
+      totalAmount: totalPrice, 
+      status: 'Confirmed', 
+      bookingDate: new Date().toISOString(), 
+      paymentDetails: paymentDetails || {}
     });
     res.status(201).send({ message: 'Booking created successfully!', bookingId: bookingRef.id });
   } catch (error) { res.status(500).send({ error: 'Failed to create booking.' }); }
@@ -136,7 +161,7 @@ app.post('/api/register', async (req, res) => {
   } catch (error) { res.status(400).send({ error: error.message }); }
 });
 
-// --- THIS IS THE CORRECTED SECTION THAT WAS MISSING ---
+// --- Public Data Fetching Endpoints ---
 app.get('/api/equipment', async (req, res) => {
   try {
     const snapshot = await db.collection('equipment').get();
@@ -160,7 +185,6 @@ app.get('/api/contractors', async (req, res) => {
     res.status(200).json(list);
   } catch (error) { res.status(500).send("Something went wrong"); }
 });
-// ----------------------------------------------------
 
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
