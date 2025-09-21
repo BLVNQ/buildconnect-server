@@ -26,22 +26,14 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// --- NEW DIAGNOSTIC CODE ---
-// This will test the connection to Gmail as soon as the server starts.
 transporter.verify(function (error, success) {
   if (error) {
     console.log("--- GMAIL CONNECTION ERROR ---");
-    console.log("There is a problem connecting to your Gmail account. The most common reasons are:");
-    console.log("1. The GMAIL_ADDRESS in your .env file is incorrect.");
-    console.log("2. The GMAIL_APP_PASSWORD in your .env file is incorrect (it should be 16 characters with no spaces).");
-    console.log("3. 2-Step Verification may have been turned off on your Google Account, which invalidates the App Password.");
-    console.log("--- FULL ERROR DETAILS ---");
     console.log(error);
   } else {
     console.log("✅ Gmail connection successful. Server is ready to send emails.");
   }
 });
-// -----------------------------
 
 const app = express();
 const PORT = 5000;
@@ -53,70 +45,64 @@ app.get('/', (req, res) => {
   res.send('BuildConnect Backend is connected to Firebase!');
 });
 
-// --- Booking Endpoint with DETAILED LOGGING ---
-app.post('/api/create-booking', async (req, res) => {
+
+// --- THIS IS THE UPDATED Payment Order Endpoint with FINAL DEBUGGING ---
+app.post('/api/create-order', async (req, res) => {
   try {
-    const { userId, cartItems, totalPrice, paymentDetails, siteLocation } = req.body;
-    if (!userId || !cartItems || !cartItems.length || !siteLocation) {
-      return res.status(400).send({ error: 'Missing booking information.' });
-    }
-    const bookingRef = await db.collection('bookings').add({
-      clientId: userId,
-      items: cartItems, 
-      totalAmount: totalPrice, 
-      status: 'Confirmed', 
-      bookingDate: new Date().toISOString(), 
-      paymentDetails: paymentDetails || {},
-      siteLocation: siteLocation
-    });
+    const { amount } = req.body;
 
-    // --- NEW DETAILED EMAIL LOGGING ---
-    console.log("--- Starting Email Process ---");
+    // --- FINAL DEBUG LOGS ---
+    console.log("--- RAZORPAY DEBUG: RECEIVED REQUEST ---");
+    console.log(`1. Raw amount received from frontend: ${amount}`);
+    console.log(`2. Type of amount received: ${typeof amount}`);
+    
+    if (typeof amount !== 'number' || amount < 1 || isNaN(amount)) {
+      console.error("--- RAZORPAY DEBUG: ERROR! Invalid amount received from frontend.");
+      return res.status(400).send({ error: 'Invalid amount for payment.' });
+    }
+    
+    const amountInPaise = Math.round(amount * 100);
+    console.log(`3. Calculated amount in paise: ${amountInPaise}`);
+    // ----------------------
+
+    const options = {
+      amount: amountInPaise, 
+      currency: "INR",
+      receipt: `receipt_order_${new Date().getTime()}`
+    };
+
+    console.log("4. Full options object being sent to Razorpay:", options);
+    
+    // --- THIS IS THE MOST IMPORTANT PART ---
+    // We will wrap the call to Razorpay in its own try...catch block
+    // to get the most detailed error possible.
     try {
-      const user = await admin.auth().getUser(userId);
-      const userEmail = user.email;
-      console.log(`Step 1: Found user email: ${userEmail}`);
-
-      const itemsList = cartItems.map(item => `<li>${item.name} (Quantity: ${item.quantity})</li>`).join('');
-
-      const mailOptions = {
-        from: `BuildConnect <${process.env.GMAIL_ADDRESS}>`,
-        to: userEmail,
-        subject: `Your BuildConnect Booking Confirmation (#${bookingRef.id.substring(0, 8)})`,
-        html: `
-          <h1>Booking Confirmed!</h1>
-          <p>Thank you for your order with BuildConnect.</p>
-          <h3>Order Summary:</h3>
-          <ul>
-            ${itemsList}
-          </ul>
-          <h3>Total Amount: ₹${totalPrice.toLocaleString()}</h3>
-          <p>Your items will be delivered to:</p>
-          <p>
-            ${siteLocation.address},<br>
-            ${siteLocation.area},<br>
-            ${siteLocation.city} - ${siteLocation.pincode}
-          </p>
-          <p>Contact No: ${siteLocation.contactNo}</p>
-        `
-      };
-      console.log("Step 2: Mail options prepared. Attempting to send email...");
-
-      await transporter.sendMail(mailOptions);
-      
-      console.log(`✅ Step 3: SUCCESS! Confirmation email sent to: ${userEmail}`);
-
-    } catch (emailError) {
-      console.error("--- EMAIL SENDING FAILED ---");
-      console.error(emailError);
+        const order = await razorpay.orders.create(options);
+        if (!order) {
+            console.error("--- RAZORPAY DEBUG: Order creation returned null/undefined.");
+            return res.status(500).send('Error creating order');
+        }
+        console.log("5. SUCCESS! Razorpay order created successfully.");
+        res.json(order);
+    } catch (razorpayError) {
+        console.error("--- RAZORPAY DEBUG: CRITICAL ERROR FROM RAZORPAY SDK ---");
+        console.error("The following error occurred while trying to create a Razorpay order:");
+        console.error("Error Code:", razorpayError.statusCode);
+        console.error("Error Details:", razorpayError.error);
+        res.status(razorpayError.statusCode || 500).send(razorpayError.error);
     }
-    // ---------------------------------
+    // ------------------------------------------
 
-    res.status(201).send({ message: 'Booking created successfully!', bookingId: bookingRef.id });
-  } catch (error) { res.status(500).send({ error: 'Failed to create booking.' }); }
+  } catch (error) {
+    // This outer catch is a failsafe
+    console.error("--- RAZORPAY DEBUG: UNEXPECTED SERVER ERROR ---");
+    console.error(error);
+    res.status(500).send("An unexpected error occurred on the server.");
+  }
 });
+// ---------------------------------------------
 
-// --- My Bookings Endpoint ---
+// --- All other endpoints are here, complete and correct ---
 app.get('/api/my-bookings/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -133,8 +119,6 @@ app.get('/api/my-bookings/:userId', async (req, res) => {
     res.status(500).send({ error: 'Failed to fetch bookings.' });
   }
 });
-
-// --- Cancel Booking Endpoint ---
 app.put('/api/bookings/:bookingId/cancel', async (req, res) => {
   try {
     const { bookingId } = req.params;
@@ -146,23 +130,6 @@ app.put('/api/bookings/:bookingId/cancel', async (req, res) => {
     res.status(500).send({ error: 'Failed to cancel booking.' });
   }
 });
-
-// --- Payment Order Endpoint ---
-app.post('/api/create-order', async (req, res) => {
-  try {
-    const { amount } = req.body;
-    const options = {
-      amount: amount * 100, currency: "INR", receipt: `receipt_order_${new Date().getTime()}`
-    };
-    const order = await razorpay.orders.create(options);
-    if (!order) return res.status(500).send('Error creating order');
-    res.json(order);
-  } catch (error) {
-    res.status(500).send("Something went wrong");
-  }
-});
-
-// --- Edit Listing Endpoint ---
 app.put('/api/listing/:collectionName/:listingId', async (req, res) => {
   try {
     const { collectionName, listingId } = req.params;
@@ -175,8 +142,6 @@ app.put('/api/listing/:collectionName/:listingId', async (req, res) => {
     }
   } catch (error) { res.status(500).send({ error: 'Failed to update listing.' }); }
 });
-
-// --- Delete Listing Endpoint ---
 app.delete('/api/listing/:collectionName/:listingId', async (req, res) => {
   try {
     const { collectionName, listingId } = req.params;
@@ -188,8 +153,6 @@ app.delete('/api/listing/:collectionName/:listingId', async (req, res) => {
     }
   } catch (error) { res.status(500).send({ error: 'Failed to remove listing.' }); }
 });
-
-// --- My Listings Endpoint ---
 app.get('/api/my-listings/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -203,8 +166,6 @@ app.get('/api/my-listings/:userId', async (req, res) => {
     res.status(200).json([...eqList, ...matList, ...conList]);
   } catch (error) { res.status(500).send({ error: 'Failed to fetch listings.' }); }
 });
-
-// --- Add Listing Endpoint ---
 app.post('/api/add-listing', async (req, res) => {
   try {
     const { listingType, name, description, price, imageUrl, location, merchantId, rateType, specialization, unit } = req.body;
@@ -215,7 +176,7 @@ app.post('/api/add-listing', async (req, res) => {
     let dataToSave = {};
     if (listingType === 'Equipment') {
       collectionName = 'equipment';
-      dataToSave = { name, description, dailyRentalPrice: Number(price), imageUrl, location, merchantId, category: 'General', availabilityStatus: 'Available' };
+      dataToSave = { name, description, rate: Number(price), rateType, imageUrl, location, merchantId, category: 'General', availabilityStatus: 'Available' };
     } else if (listingType === 'Material') {
       collectionName = 'materials';
       dataToSave = { name, specs: description, pricePerUnit: Number(price), imageUrl, merchantId, unit, stockQuantity: 100 };
@@ -229,8 +190,36 @@ app.post('/api/add-listing', async (req, res) => {
     res.status(201).send({ message: 'Listing created successfully!', id: docRef.id });
   } catch (error) { res.status(500).send({ error: 'Failed to create listing.' }); }
 });
-
-// --- User Registration Endpoint ---
+app.post('/api/create-booking', async (req, res) => {
+  try {
+    const { userId, cartItems, totalPrice, paymentDetails, siteLocation } = req.body;
+    if (!userId || !cartItems || !cartItems.length || !siteLocation) {
+      return res.status(400).send({ error: 'Missing booking information.' });
+    }
+    const bookingRef = await db.collection('bookings').add({
+      clientId: userId,
+      items: cartItems, 
+      totalAmount: totalPrice, 
+      status: 'Confirmed', 
+      bookingDate: new Date().toISOString(), 
+      paymentDetails: paymentDetails || {},
+      siteLocation: siteLocation
+    });
+    try {
+      const user = await admin.auth().getUser(userId);
+      const userEmail = user.email;
+      const itemsList = cartItems.map(item => `<li>${item.name} (Quantity: ${item.quantity})</li>`).join('');
+      const mailOptions = {
+        from: `BuildConnect <${process.env.GMAIL_ADDRESS}>`, to: userEmail, subject: `Your BuildConnect Booking Confirmation (#${bookingRef.id.substring(0, 8)})`, html: `<h1>Booking Confirmed!</h1><p>Thank you for your order with BuildConnect.</p><h3>Order Summary:</h3><ul>${itemsList}</ul><h3>Total Amount: ₹${totalPrice.toLocaleString()}</h3><p>Your items will be delivered to:</p><p>${siteLocation.address},<br>${siteLocation.area},<br>${siteLocation.city} - ${siteLocation.pincode}</p><p>Contact No: ${siteLocation.contactNo}</p>`
+      };
+      await transporter.sendMail(mailOptions);
+      console.log('Confirmation email sent to:', userEmail);
+    } catch (emailError) {
+      console.error("Failed to send confirmation email:", emailError);
+    }
+    res.status(201).send({ message: 'Booking created successfully!', bookingId: bookingRef.id });
+  } catch (error) { res.status(500).send({ error: 'Failed to create booking.' }); }
+});
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, name, role } = req.body;
@@ -239,8 +228,6 @@ app.post('/api/register', async (req, res) => {
     res.status(201).send({ message: 'User created successfully!', uid: userRecord.uid });
   } catch (error) { res.status(400).send({ error: error.message }); }
 });
-
-// --- Public Data Fetching Endpoints ---
 app.get('/api/equipment', async (req, res) => {
   try {
     const snapshot = await db.collection('equipment').get();
@@ -248,7 +235,6 @@ app.get('/api/equipment', async (req, res) => {
     res.status(200).json(list);
   } catch (error) { res.status(500).send("Something went wrong"); }
 });
-
 app.get('/api/materials', async (req, res) => {
   try {
     const snapshot = await db.collection('materials').get();
@@ -256,7 +242,6 @@ app.get('/api/materials', async (req, res) => {
     res.status(200).json(list);
   } catch (error) { res.status(500).send("Something went wrong"); }
 });
-
 app.get('/api/contractors', async (req, res) => {
   try {
     const snapshot = await db.collection('contractors').get();
