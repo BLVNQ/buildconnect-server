@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const Razorpay = require('razorpay');
+const nodemailer = require('nodemailer');
 
 const serviceAccount = require('./serviceAccountKey.json');
 
@@ -17,6 +18,31 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_ADDRESS,
+    pass: process.env.GMAIL_APP_PASSWORD,
+  },
+});
+
+// --- NEW DIAGNOSTIC CODE ---
+// This will test the connection to Gmail as soon as the server starts.
+transporter.verify(function (error, success) {
+  if (error) {
+    console.log("--- GMAIL CONNECTION ERROR ---");
+    console.log("There is a problem connecting to your Gmail account. The most common reasons are:");
+    console.log("1. The GMAIL_ADDRESS in your .env file is incorrect.");
+    console.log("2. The GMAIL_APP_PASSWORD in your .env file is incorrect (it should be 16 characters with no spaces).");
+    console.log("3. 2-Step Verification may have been turned off on your Google Account, which invalidates the App Password.");
+    console.log("--- FULL ERROR DETAILS ---");
+    console.log(error);
+  } else {
+    console.log("✅ Gmail connection successful. Server is ready to send emails.");
+  }
+});
+// -----------------------------
+
 const app = express();
 const PORT = 5000;
 
@@ -27,24 +53,68 @@ app.get('/', (req, res) => {
   res.send('BuildConnect Backend is connected to Firebase!');
 });
 
-
-// --- NEW ENDPOINT TO CANCEL A BOOKING ---
-app.put('/api/bookings/:bookingId/cancel', async (req, res) => {
+// --- Booking Endpoint with DETAILED LOGGING ---
+app.post('/api/create-booking', async (req, res) => {
   try {
-    const { bookingId } = req.params;
-    const bookingRef = db.collection('bookings').doc(bookingId);
+    const { userId, cartItems, totalPrice, paymentDetails, siteLocation } = req.body;
+    if (!userId || !cartItems || !cartItems.length || !siteLocation) {
+      return res.status(400).send({ error: 'Missing booking information.' });
+    }
+    const bookingRef = await db.collection('bookings').add({
+      clientId: userId,
+      items: cartItems, 
+      totalAmount: totalPrice, 
+      status: 'Confirmed', 
+      bookingDate: new Date().toISOString(), 
+      paymentDetails: paymentDetails || {},
+      siteLocation: siteLocation
+    });
 
-    // Update the document to set the status to "Cancelled"
-    await bookingRef.update({ status: 'Cancelled' });
+    // --- NEW DETAILED EMAIL LOGGING ---
+    console.log("--- Starting Email Process ---");
+    try {
+      const user = await admin.auth().getUser(userId);
+      const userEmail = user.email;
+      console.log(`Step 1: Found user email: ${userEmail}`);
 
-    res.status(200).send({ message: 'Booking cancelled successfully!' });
-  } catch (error) {
-    console.error("Error cancelling booking:", error);
-    res.status(500).send({ error: 'Failed to cancel booking.' });
-  }
+      const itemsList = cartItems.map(item => `<li>${item.name} (Quantity: ${item.quantity})</li>`).join('');
+
+      const mailOptions = {
+        from: `BuildConnect <${process.env.GMAIL_ADDRESS}>`,
+        to: userEmail,
+        subject: `Your BuildConnect Booking Confirmation (#${bookingRef.id.substring(0, 8)})`,
+        html: `
+          <h1>Booking Confirmed!</h1>
+          <p>Thank you for your order with BuildConnect.</p>
+          <h3>Order Summary:</h3>
+          <ul>
+            ${itemsList}
+          </ul>
+          <h3>Total Amount: ₹${totalPrice.toLocaleString()}</h3>
+          <p>Your items will be delivered to:</p>
+          <p>
+            ${siteLocation.address},<br>
+            ${siteLocation.area},<br>
+            ${siteLocation.city} - ${siteLocation.pincode}
+          </p>
+          <p>Contact No: ${siteLocation.contactNo}</p>
+        `
+      };
+      console.log("Step 2: Mail options prepared. Attempting to send email...");
+
+      await transporter.sendMail(mailOptions);
+      
+      console.log(`✅ Step 3: SUCCESS! Confirmation email sent to: ${userEmail}`);
+
+    } catch (emailError) {
+      console.error("--- EMAIL SENDING FAILED ---");
+      console.error(emailError);
+    }
+    // ---------------------------------
+
+    res.status(201).send({ message: 'Booking created successfully!', bookingId: bookingRef.id });
+  } catch (error) { res.status(500).send({ error: 'Failed to create booking.' }); }
 });
-// ----------------------------------------
-
 
 // --- My Bookings Endpoint ---
 app.get('/api/my-bookings/:userId', async (req, res) => {
@@ -61,6 +131,19 @@ app.get('/api/my-bookings/:userId', async (req, res) => {
   } catch (error) {
     console.error("Error fetching user bookings:", error);
     res.status(500).send({ error: 'Failed to fetch bookings.' });
+  }
+});
+
+// --- Cancel Booking Endpoint ---
+app.put('/api/bookings/:bookingId/cancel', async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    await bookingRef.update({ status: 'Cancelled' });
+    res.status(200).send({ message: 'Booking cancelled successfully!' });
+  } catch (error) {
+    console.error("Error cancelling booking:", error);
+    res.status(500).send({ error: 'Failed to cancel booking.' });
   }
 });
 
@@ -145,25 +228,6 @@ app.post('/api/add-listing', async (req, res) => {
     const docRef = await db.collection(collectionName).add(dataToSave);
     res.status(201).send({ message: 'Listing created successfully!', id: docRef.id });
   } catch (error) { res.status(500).send({ error: 'Failed to create listing.' }); }
-});
-
-// --- Booking Endpoint ---
-app.post('/api/create-booking', async (req, res) => {
-  try {
-    const { userId, cartItems, totalPrice, paymentDetails } = req.body;
-    if (!userId || !cartItems || !cartItems.length) {
-      return res.status(400).send({ error: 'Missing booking information.' });
-    }
-    const bookingRef = await db.collection('bookings').add({
-      clientId: userId,
-      items: cartItems, 
-      totalAmount: totalPrice, 
-      status: 'Confirmed', 
-      bookingDate: new Date().toISOString(), 
-      paymentDetails: paymentDetails || {}
-    });
-    res.status(201).send({ message: 'Booking created successfully!', bookingId: bookingRef.id });
-  } catch (error) { res.status(500).send({ error: 'Failed to create booking.' }); }
 });
 
 // --- User Registration Endpoint ---
